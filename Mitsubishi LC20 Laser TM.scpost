@@ -12,6 +12,7 @@ end
 --   Revision - 08/22/2019 - 1.1.0 Added Etch Capability
 --   Last Revision - 09/16/2019 - 1.2.0 Added Inside/Outside Condition Compatibility
 --   Revision by Erik Akia to make it function for a LC20 controller
+--   Uploaded to github 04/23/2025
 
 post.ForceExtension("NC")
 
