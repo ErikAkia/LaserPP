@@ -1,0 +1,235 @@
+function OnAbout(event)
+   ctrl = event:GetTextCtrl()
+   ctrl:AppendText("Post processor for Mitsubishi M700 Controller\n")
+   ctrl:AppendText("\n")
+   ctrl:AppendText("Uses absolute coordinates\n")
+   ctrl:AppendText("Uses incremental arcs\n")
+   ctrl:AppendText("Control handles all piercing, power, feed, frequency, duty cycle, etc\n")
+end
+
+--   Created 05/02/2019 by David McCullough for M700 LC30 controller
+--   Revision - 08/19/2019 - 1.0.0 First Functional Code
+--   Revision - 08/22/2019 - 1.1.0 Added Etch Capability
+--   Last Revision - 09/16/2019 - 1.2.0 Added Inside/Outside Condition Compatibility
+--   Revision by Erik Akia to make it function for a LC20 controller
+
+post.ForceExtension("NC")
+
+post.DefineCustomToolParam("LaserTool","Material Type","materialType",sc.unitTEXT)
+post.DefineCustomToolParam("LaserTool","Material Thickness","materialThickness",sc.unitTEXT)
+post.DefineCustomToolParam("LaserTool","Frequency","frequency",sc.unit0DECPLACE,1200,1,2500)
+post.DefineCustomToolParam("LaserTool","Duty Cycle","dutyCycle",sc.unit0DECPLACE,75,1,100)
+post.DefineCustomToolParam("LaserTool","Material","matlType",sc.unitTEXT,MS)
+post.DefineCustomToolParam("LaserTool","Thickness","matlThickness",sc.unit3DECPLACE,0,0,1.000)
+post.DefineCustomToolParam("LaserTool","Pierce Type","pierceType",sc.unit0DECPLACE,9010,0,9999)
+post.DefineCustomToolParam("LaserTool","Inside Condition","cutCondition1",sc.unit0DECPLACE,107,102,110)
+post.DefineCustomToolParam("LaserTool","Outside Condition","cutCondition2",sc.unit0DECPLACE,107,102,110)
+post.DefineCustomToolParam("LaserTool","Nozzle","nozzle",sc.unitTEXT,S)
+post.DefineCustomToolParam("LaserTool","Re-pierce Dwell","rpDwell",sc.unit2DECPLACE,1.0,0,10)
+post.DefineCustomToolParam("LaserTool","Cut Gas","cutGas",sc.unitTEXT,O2)
+post.DefineCustomToolParam("LaserTool","Units","machUnits",sc.unitTEXT,US)
+
+post.DefineVariable("etch",sc.unit0DECPLACE,0,1)
+post.DefineVariable("InsidePath",sc.unit0DECPLACE,0,1)
+post.DefineVariable("EtchPower",sc.unit0DECPLACE,0,500)
+
+function OnFileOpen()
+	local cfg = wx.wxConfigBase.Get(false)
+	local found
+	local num
+	found,num = cfg:Read("/post/fileNumber", 1000)
+	num = num + 1
+	cfg:Write("/post/fileNumber", num)
+end
+
+function OnInit()
+   lineNumber = 1
+   post.SetCommentChars ("()", "[]")  --make sure ( and ) characters do not appear in system text
+   minArcSize = 0.5 --arcs smaller than this are converted to moves
+   post.Text("%\n")
+   post.Text("#105=105\n")
+   post.Text("#106=106\n")
+   post.Text("#107=107\n")
+   post.Text("#108=108\n")
+   post.Text("#109=109\n")
+   post.Text("G90G92X0Y0\n")
+   post.Text("M66\n")
+   post.Text("M101M80\n")
+   boundaryNo = 0
+   rapidX = 0
+   rapidY = 0
+   postFileName = 0
+   initialized = 0
+   etch = 0
+   InsidePath = 0
+   EtchPower = 0
+   maxX = 0
+   minX = 0
+   maxY = 0
+   minY = 0
+end
+   
+--function OnToolChange()
+
+
+function OnRapid()
+   if(math.hypot(endX - currentX, endY - currentY) < 0.02) then return end
+   if(endX >= 1e12 or endY >= 1e12) then return end
+   rapidX = endX * scale
+   rapidY = endY * scale
+end
+
+function OnMove()
+   if(math.hypot(endX - currentX, endY - currentY) < 0.02) then return end
+   if(endX >= 1e12 or endY >= 1e12) then return end
+   post.Text ("G01")
+   post.NonModalNumber ("X", endX * scale, "0.0000")
+   post.NonModalNumber ("Y", endY * scale, "0.0000")
+   post.Eol()
+end
+
+function OnArc()
+   if(arcAngle <0) then
+      post.Text ("G03")
+   else
+      post.Text ("G02")
+   end
+   post.NonModalNumber ("X", endX * scale, "0.0000")
+   post.NonModalNumber ("Y", endY * scale, "0.0000")
+   post.Text ("I")
+   post.Number ((arcCentreX - currentX) * scale, "0.0000")
+   post.Text ("J")
+   post.Number ((arcCentreY - currentY) * scale, "0.0000")
+   post.Eol()
+end
+
+function OnPenDown()
+	if (boundaryNo ~= 0) then
+		boundaryNo = boundaryNo + 1
+		post.NonModalNumber("N", boundaryNo, "0000")
+		post.NonModalNumber(" (BND:", boundaryNo, "0")
+		post.Text(")\n")
+	end
+	if (boundaryNo == 0) then
+		post.Text("N0001 (BND:1)\n")
+		post.Text("#3002=0 (TIMER)\n")
+		boundaryNo = boundaryNo + 1
+	end
+	post.NonModalNumber("G0G40M101X", rapidX, "0.0000")
+	post.NonModalNumber("Y", rapidY, "0.0000")
+	post.Eol()
+	if (etch == 1) then
+		post.Text("#501=#111")
+	elseif (InsidePath == 1) then
+		post.NonModalNumber("#501=#", cutCondition1, "0")
+	else
+		post.NonModalNumber("#501=#", cutCondition2, "0")
+	end
+	post.Eol()
+	if (EtchPower ~= 0) then
+		post.Text("S" .. EtchPower .. " T50\n")
+	end
+	if (etch == 1) then
+		post.Text("M98P9008")
+	else
+		post.NonModalNumber("M98P", pierceType, "0")
+	end
+	post.Eol()
+	post.Text("G40")
+	if (InsidePath == 1) then
+		if (cutCondition1 == 102) then
+			post.Text("D2\n")
+		elseif (cutCondition1 == 103) then
+			post.Text("D3\n")
+		elseif (cutCondition1 == 104) then
+			post.Text("D4\n")
+		elseif (cutCondition1 == 105) then
+			post.Text("D5\n")
+		elseif (cutCondition1 == 106) then
+			post.Text("D6\n")
+		elseif (cutCondition1 == 107) then
+			post.Text("D7\n")
+		elseif (cutCondition1 == 108) then
+			post.Text("D8\n")
+		elseif (cutCondition1 == 109) then
+			post.Text("D9\n")
+		elseif (cutCondition1 == 110) then
+			post.Text("D10\n")
+		else
+			post.error("Invalid Condition!")
+		end
+	else
+		if (cutCondition2 == 102) then
+			post.Text("D2\n")
+		elseif (cutCondition2 == 103) then
+			post.Text("D3\n")
+		elseif (cutCondition2 == 104) then
+			post.Text("D4\n")
+		elseif (cutCondition2 == 105) then
+			post.Text("D5\n")
+		elseif (cutCondition2 == 106) then
+			post.Text("D6\n")
+		elseif (cutCondition2 == 107) then
+			post.Text("D7\n")
+		elseif (cutCondition2 == 108) then
+			post.Text("D8\n")
+		elseif (cutCondition2 == 109) then
+			post.Text("D9\n")
+		elseif (cutCondition2 == 110) then
+			post.Text("D10\n")
+		else
+			post.error("Invalid Condition!")
+		end
+	end
+	post.Eol()
+end
+
+function OnPenUp()
+   post.Text ("M121\n")
+   post.Text ("M199\n")
+   post.Eol()
+end
+
+function OnFinish()
+   post.Text("M74\n")
+   post.Text("G0G40\n")
+   post.Text("G28Z0\n")
+   post.Text("M2\n")
+   post.Text("%\n")
+end
+
+--function JobExtentLinear()
+--	if (endX > maxX) then
+--		maxX = endX
+--	end
+--	if (endX < minX) then
+--		minX = endX
+--	end
+--	if (endY > maxY) then
+--		maxY = endY
+--	end
+--	if (endY < minY) then
+--		minY = endY
+--	end
+--end
+
+--Function JobExtentArc()
+
+--end
+	
+
+--function OnFileClosed()
+--	path = filePath.. "/" .. fileName
+--	file = io.open(path, "r")
+--	fileContent = {}
+--	for line in file:lines() do
+--		table.insert (fileContent, line)
+--	end
+--	io.close(file)
+--	fileContent[1] = "%"
+--	file = io.open(path, "w")
+--	for index, value in ipairs(fileContent) do
+--		file:write(value.."\n")
+--	end
+--	io.close(file)
+--end
